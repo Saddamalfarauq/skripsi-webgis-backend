@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+sqlalchemy
+earthengine-api
+google-auth
+rasterio
+geopandas
+shapely
+numpy
+matplotlib
+requests
+Pillow
+torch --index-url https://download.pytorch.org/whl/cpu
+torchvision --index-url https://download.pytorch.org/whl/cpu
+timm
+python-multipart

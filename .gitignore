@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+dataset/
+models_weights/*.pth

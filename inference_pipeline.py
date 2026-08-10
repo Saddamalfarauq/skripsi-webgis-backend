@@ -203,9 +203,9 @@ class FloodInferencePipeline:
         with torch.no_grad():
             predictions = self.maskrcnn(mask_tensor)[0]
             
-        # Filter predictions by score > 0.50 untuk menangkap semua potensi genangan air
+        # Filter predictions by score > 0.30 untuk menangkap seluruh potensi genangan air
         scores = predictions['scores'].cpu().numpy()
-        high_conf_idx = np.where(scores > 0.50)[0]
+        high_conf_idx = np.where(scores > 0.30)[0]
         
         boxes = predictions['boxes'].cpu().numpy()[high_conf_idx]
         masks = predictions['masks'].cpu().numpy()[high_conf_idx, 0] # (N, H, W)
@@ -221,15 +221,26 @@ class FloodInferencePipeline:
         import cv2
         for m in masks:
             m_resized = cv2.resize(m, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
-            m_binary = (m_resized > 0.45) & valid_mask
+            m_binary = (m_resized > 0.35) & valid_mask
             if np.any(m_binary):
                 final_masks.append(m_binary)
             
-        # Hybrid Fallback: Jika Mask R-CNN mengembalikan 0 poligon (misal pada citra historis tertentu), 
-        # gunakan deteksi spektral fisik SAR Radar (VV < -13 dB) & Optis NDWI (> 0.02)
+        # Hybrid Adaptive Fallback: Ekstraksi spektral adaptif skala SAR Radar & Optis NDWI
         ndwi_data = cnn_input[5]
         vv_data = cnn_input[6]
-        water_spectral_mask = ((ndwi_data > 0.02) | ((vv_data < -13.0) & (vv_data > -35.0))) & valid_mask
+        
+        valid_pixels = vv_data[valid_mask]
+        if len(valid_pixels) > 0:
+            vv_min = np.min(valid_pixels)
+            if vv_min < -5.0: # Skala dB (logaritmik)
+                sar_water = (vv_data < -10.0) & (vv_data > -40.0)
+            else: # Skala Linier
+                sar_water = (vv_data < 0.15) & (vv_data > 0.0001)
+        else:
+            sar_water = np.zeros_like(vv_data, dtype=bool)
+
+        ndwi_water = (ndwi_data > -0.05)
+        water_spectral_mask = (sar_water | ndwi_water) & valid_mask
 
         if len(final_masks) == 0 and np.any(water_spectral_mask):
             print(f"  -> Hybrid Fallback: Menggunakan ekstraksi spektral SAR + NDWI...")

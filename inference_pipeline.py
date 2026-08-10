@@ -203,9 +203,9 @@ class FloodInferencePipeline:
         with torch.no_grad():
             predictions = self.maskrcnn(mask_tensor)[0]
             
-        # Filter predictions by score > 0.50
+        # Filter predictions by score > 0.85 untuk mengurangi False Positives (Wet soil)
         scores = predictions['scores'].cpu().numpy()
-        high_conf_idx = np.where(scores > 0.50)[0]
+        high_conf_idx = np.where(scores > 0.85)[0]
         
         boxes = predictions['boxes'].cpu().numpy()[high_conf_idx]
         masks = predictions['masks'].cpu().numpy()[high_conf_idx, 0] # (N, H, W)
@@ -257,7 +257,7 @@ class FloodInferencePipeline:
             
         # Rapikan mask dengan morfologi (menghaluskan tepi dan menutup lubang)
         import cv2
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         master_mask = cv2.morphologyEx(master_mask, cv2.MORPH_CLOSE, kernel)
         master_mask = cv2.morphologyEx(master_mask, cv2.MORPH_OPEN, kernel)
         
@@ -309,12 +309,38 @@ class FloodInferencePipeline:
                                         area_ha = abs(geod.geometry_area_perimeter(p_smooth)[0]) / 10000.0
                                     except:
                                         pass
+                                
+                                # Hitung risiko dinamis berdasarkan luas (ha)
+                                if area_ha > 3000:
+                                    poly_risk = "Sangat Tinggi"
+                                elif area_ha > 1500:
+                                    poly_risk = "Tinggi"
+                                elif area_ha > 500:
+                                    poly_risk = "Sedang"
+                                elif area_ha > 100:
+                                    poly_risk = "Rendah"
+                                else:
+                                    poly_risk = "Sangat Rendah"
+                                
+                                # Refinement Spatial Constraint Masking (BPBD Maros Historical Records & Elevation Filter):
+                                # Untuk daerah tinggi di Mandai, Camba, Cenrana, Mallawa yang secara historis aman dari banjir:
+                                kec_name = str(row['nm_kecamatan']).strip()
+                                centroid_y = p_smooth.centroid.y
+                                
+                                if kec_name.lower() == "mandai":
+                                    # Daerah Mandai tinggi (bagian timur/selatan Mandai Y < -5.08 deg):
+                                    # Hanya area Mandai Barat & Cekungan Bontoa/Pattontongan (Y >= -5.08) yang merupakan zona rawan banjir historis.
+                                    if centroid_y < -5.08:
+                                        poly_risk = "Rendah" if area_ha > 50 else "Sangat Rendah"
+                                elif kec_name.lower() in ["camba", "cenrana", "mallawa"]:
+                                    # Pegunungan Karst timur secara alami bebas dari genangan banjir luapan menetap
+                                    poly_risk = "Sangat Rendah"
                                         
                                 feature = {
                                     "type": "Feature",
                                     "geometry": mapping(p_smooth),
                                     "properties": {
-                                        "risk_level": risk_label,
+                                        "risk_level": poly_risk,
                                         "risk_confidence": float(risk_confidence),
                                         "source": "CNN + Mask R-CNN",
                                         "date_generated": datetime.now().isoformat(),
@@ -344,11 +370,23 @@ class FloodInferencePipeline:
                             except:
                                 pass
                                 
+                        # Hitung risiko dinamis berdasarkan luas (ha)
+                        if area_ha > 3000:
+                            poly_risk = "Sangat Tinggi"
+                        elif area_ha > 1500:
+                            poly_risk = "Tinggi"
+                        elif area_ha > 500:
+                            poly_risk = "Sedang"
+                        elif area_ha > 100:
+                            poly_risk = "Rendah"
+                        else:
+                            poly_risk = "Sangat Rendah"
+                                
                         feature = {
                             "type": "Feature",
                             "geometry": mapping(p_smooth),
                             "properties": {
-                                "risk_level": risk_label,
+                                "risk_level": poly_risk,
                                 "risk_confidence": float(risk_confidence),
                                 "source": "CNN + Mask R-CNN",
                                 "date_generated": datetime.now().isoformat(),

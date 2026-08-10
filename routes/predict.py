@@ -110,15 +110,21 @@ async def predict_flood(request: PredictRequest, db: Session = Depends(get_db)):
             .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH')) \
             .select(['VV', 'VH'])
             
-        # Sentinel-2
+        # Sentinel-2 (Tingkatkan toleransi cloud jika rentang tanggal sempit)
         s2_col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi) \
             .filterDate(s2_from, to_date_str) \
-            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80)) \
             .select(['B2', 'B3', 'B4', 'B8'], ['B02', 'B03', 'B04', 'B08'])
             
-        s1_image = s1_col.mosaic().clip(roi).unmask(0)
-        s2_image = s2_col.mosaic().clip(roi).unmask(0)
+        # Buat dummy fallback jika salah satu koleksi citra kosong pada rentang tanggal tersebut
+        dummy_s1 = ee.Image.constant([0, 0]).rename(['VV', 'VH']).clip(roi)
+        dummy_s2 = ee.Image.constant([0, 0, 0, 0]).rename(['B02', 'B03', 'B04', 'B08']).clip(roi)
+        
+        s1_image = ee.Algorithms.If(s1_col.size().gt(0), s1_col.mosaic().select(['VV', 'VH']).clip(roi), dummy_s1)
+        s2_image = ee.Algorithms.If(s2_col.size().gt(0), s2_col.mosaic().select(['B02', 'B03', 'B04', 'B08']).clip(roi), dummy_s2)
+        
+        s1_image = ee.Image(s1_image).unmask(0)
+        s2_image = ee.Image(s2_image).unmask(0)
         
         # Get actual satellite date (using Sentinel-1 as reference)
         try:

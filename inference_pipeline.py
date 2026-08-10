@@ -212,8 +212,10 @@ class FloodInferencePipeline:
         
         print(f"  -> Mask R-CNN found {len(boxes)} flooded regions.")
         
-        # Buat mask NoData: asumsikan jika semua band = 0, maka itu NoData/di luar swath
-        valid_mask = np.any(cnn_input != 0, axis=0) # (H, W)
+        # Buat mask NoData: pastikan ada nilai refleksitansi / radar non-zero aktual
+        raw_b4 = cnn_input[0]
+        raw_vv = cnn_input[6]
+        valid_mask = ((raw_b4 > 10) | (raw_vv < -2.0)) & (raw_vv != 0)
         
         # Resize masks back to original resolution for GeoJSON
         original_h, original_w = cnn_input.shape[1], cnn_input.shape[2]
@@ -221,7 +223,7 @@ class FloodInferencePipeline:
         import cv2
         for m in masks:
             m_resized = cv2.resize(m, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
-            m_binary = (m_resized > 0.35) & valid_mask
+            m_binary = (m_resized > 0.40) & valid_mask
             if np.any(m_binary):
                 final_masks.append(m_binary)
             
@@ -233,13 +235,13 @@ class FloodInferencePipeline:
         if len(valid_pixels) > 0:
             vv_min = np.min(valid_pixels)
             if vv_min < -5.0: # Skala dB (logaritmik)
-                sar_water = (vv_data < -10.0) & (vv_data > -40.0)
+                sar_water = (vv_data < -12.0) & (vv_data > -38.0)
             else: # Skala Linier
-                sar_water = (vv_data < 0.15) & (vv_data > 0.0001)
+                sar_water = (vv_data < 0.08) & (vv_data > 0.0001)
         else:
             sar_water = np.zeros_like(vv_data, dtype=bool)
 
-        ndwi_water = (ndwi_data > -0.05)
+        ndwi_water = (ndwi_data > 0.08)
         water_spectral_mask = (sar_water | ndwi_water) & valid_mask
 
         if len(final_masks) == 0 and np.any(water_spectral_mask):

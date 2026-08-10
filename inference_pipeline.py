@@ -377,6 +377,12 @@ class FloodInferencePipeline:
                                 # 3. Pegunungan Karst & Dataran Tinggi Timur (Camba, Cenrana, Mallawa, Tompobulu): bebas dari banjir luapan
                                 elif kec_name.lower() in ["camba", "cenrana", "mallawa", "tompobulu"]:
                                     poly_risk = "Sangat Rendah"
+                                # 4. Filter Tambak & Air Permanen Pesisir Barat (Bontoa, Lau, Maros Baru, Marusu X < 119.52 deg):
+                                #    Pada musim kemarau (seperti Agustus), air di pesisir adalah genangan tambak ikan/udang permanen sepanjang tahun.
+                                #    Jika indikator risiko makro CNN rendah, air tambak dikategorikan sebagai "Rendah" / "Sangat Rendah".
+                                elif (centroid_x < 119.52) and (kec_name.lower() in ["bontoa", "lau", "maros baru", "marusu"]):
+                                    if risk_label in ["Sangat Rendah", "Rendah", "Sedang"]:
+                                        poly_risk = "Rendah" if area_ha > 150 else "Sangat Rendah"
                                         
                                 feature = {
                                     "type": "Feature",

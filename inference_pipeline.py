@@ -203,9 +203,9 @@ class FloodInferencePipeline:
         with torch.no_grad():
             predictions = self.maskrcnn(mask_tensor)[0]
             
-        # Filter predictions by score > 0.85 untuk mengurangi False Positives (Wet soil)
+        # Filter predictions by score > 0.50 untuk menangkap semua potensi genangan air
         scores = predictions['scores'].cpu().numpy()
-        high_conf_idx = np.where(scores > 0.85)[0]
+        high_conf_idx = np.where(scores > 0.50)[0]
         
         boxes = predictions['boxes'].cpu().numpy()[high_conf_idx]
         masks = predictions['masks'].cpu().numpy()[high_conf_idx, 0] # (N, H, W)
@@ -221,19 +221,24 @@ class FloodInferencePipeline:
         import cv2
         for m in masks:
             m_resized = cv2.resize(m, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
-            m_binary = (m_resized > 0.5) & valid_mask
+            m_binary = (m_resized > 0.45) & valid_mask
             if np.any(m_binary):
                 final_masks.append(m_binary)
             
+        # Hybrid Fallback: Jika Mask R-CNN mengembalikan 0 poligon (misal pada citra historis tertentu), 
+        # gunakan deteksi spektral fisik SAR Radar (VV < -13 dB) & Optis NDWI (> 0.02)
+        ndwi_data = cnn_input[5]
+        vv_data = cnn_input[6]
+        water_spectral_mask = ((ndwi_data > 0.02) | ((vv_data < -13.0) & (vv_data > -35.0))) & valid_mask
+
+        if len(final_masks) == 0 and np.any(water_spectral_mask):
+            print(f"  -> Hybrid Fallback: Menggunakan ekstraksi spektral SAR + NDWI...")
+            final_masks.append(water_spectral_mask)
+
         # 3. Export to GeoJSON
         geojson_path = os.path.join(output_dir, f"flood-risk-latest.geojson")
         if HAS_GEO:
             if len(final_masks) > 0:
-                # Buat water_spectral_mask dari NDWI (ch 5) dan VV (ch 6) untuk memastikan hanya piksel air riil yang diambil
-                ndwi_data = cnn_input[5]
-                vv_data = cnn_input[6]
-                water_spectral_mask = (ndwi_data > -0.05) | (vv_data < -12.0)
-                
                 self._export_geojson(final_masks, transform, crs, risk_label, risk_confidence, geojson_path, water_mask=water_spectral_mask)
             else:
                 # Generate empty GeoJSON to indicate no floods found

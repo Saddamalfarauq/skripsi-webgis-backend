@@ -203,14 +203,14 @@ class FloodInferencePipeline:
         with torch.no_grad():
             predictions = self.maskrcnn(mask_tensor)[0]
             
-        # Filter predictions by score > 0.30 untuk menangkap seluruh potensi genangan air
+        # Filter predictions by score > 0.70 untuk presisi tinggi & eliminasi False Positives
         scores = predictions['scores'].cpu().numpy()
-        high_conf_idx = np.where(scores > 0.30)[0]
+        high_conf_idx = np.where(scores > 0.70)[0]
         
         boxes = predictions['boxes'].cpu().numpy()[high_conf_idx]
         masks = predictions['masks'].cpu().numpy()[high_conf_idx, 0] # (N, H, W)
         
-        print(f"  -> Mask R-CNN found {len(boxes)} flooded regions.")
+        print(f"  -> Mask R-CNN found {len(boxes)} high-confidence flooded regions.")
         
         # Buat mask NoData: pastikan ada nilai refleksitansi / radar non-zero aktual
         raw_b4 = cnn_input[0]
@@ -223,11 +223,11 @@ class FloodInferencePipeline:
         import cv2
         for m in masks:
             m_resized = cv2.resize(m, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
-            m_binary = (m_resized > 0.40) & valid_mask
+            m_binary = (m_resized > 0.50) & valid_mask
             if np.any(m_binary):
                 final_masks.append(m_binary)
             
-        # Hybrid Adaptive Fallback: Ekstraksi spektral adaptif skala SAR Radar & Optis NDWI
+        # Hybrid High-Precision Fallback: Ekstraksi spektral presisi tinggi SAR Radar (VV < -14.5 dB) & NDWI (> 0.20)
         ndwi_data = cnn_input[5]
         vv_data = cnn_input[6]
         
@@ -235,17 +235,17 @@ class FloodInferencePipeline:
         if len(valid_pixels) > 0:
             vv_min = np.min(valid_pixels)
             if vv_min < -5.0: # Skala dB (logaritmik)
-                sar_water = (vv_data < -12.0) & (vv_data > -38.0)
+                sar_water = (vv_data < -14.5) & (vv_data > -38.0)
             else: # Skala Linier
-                sar_water = (vv_data < 0.08) & (vv_data > 0.0001)
+                sar_water = (vv_data < 0.035) & (vv_data > 0.0001)
         else:
             sar_water = np.zeros_like(vv_data, dtype=bool)
 
-        ndwi_water = (ndwi_data > 0.08)
-        water_spectral_mask = (sar_water | ndwi_water) & valid_mask
+        ndwi_water = (ndwi_data > 0.20)
+        water_spectral_mask = (sar_water & ndwi_water) & valid_mask
 
         if len(final_masks) == 0 and np.any(water_spectral_mask):
-            print(f"  -> Hybrid Fallback: Menggunakan ekstraksi spektral SAR + NDWI...")
+            print(f"  -> Hybrid Fallback: Menggunakan ekstraksi spektral presisi SAR + NDWI...")
             final_masks.append(water_spectral_mask)
 
         # 3. Export to GeoJSON

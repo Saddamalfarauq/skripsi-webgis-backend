@@ -298,12 +298,11 @@ class FloodInferencePipeline:
                             if intersection.is_empty:
                                 continue
                                 
-                            # Cek apakah intersection merupakan bentuk utuh dari seluruh kecamatan (>70% luas kecamatan)
-                            # Jika ya, maka terjadi false-positive pencakupan seluruh batas kecamatan, potong ke area cekungan air riil
+                            # Cek apakah intersection merupakan pembengkakan poligon batas kecamatan (>15% luas kecamatan)
+                            # Jika ya, potong secara presisi ke koridor sungai & cekungan air riil agar tidak memblokir seluruh kecamatan
                             kec_total_area = kec_geom.area
-                            if intersection.area >= 0.70 * kec_total_area:
-                                # Perkecil poligon ke kontur piksel air aktual (misal buffer negatif halus/simplify)
-                                intersection = intersection.buffer(-0.002).simplify(0.0005, preserve_topology=True)
+                            if intersection.area >= 0.15 * kec_total_area:
+                                intersection = intersection.buffer(-0.004).simplify(0.0005, preserve_topology=True)
                                 if intersection.is_empty:
                                     continue
                                 
@@ -332,30 +331,32 @@ class FloodInferencePipeline:
                                     continue
 
                                 # Hitung risiko dinamis berdasarkan luas genangan riil (ha)
-                                if area_ha > 800:
+                                if area_ha > 600:
                                     poly_risk = "Sangat Tinggi"
-                                elif area_ha > 400:
+                                elif area_ha > 300:
                                     poly_risk = "Tinggi"
-                                elif area_ha > 150:
+                                elif area_ha > 100:
                                     poly_risk = "Sedang"
-                                elif area_ha > 30:
+                                elif area_ha > 20:
                                     poly_risk = "Rendah"
                                 else:
                                     poly_risk = "Sangat Rendah"
                                 
-                                # Refinement Spatial Constraint Masking (BPBD Maros Historical Records & Elevation Constraint):
+                                # Refinement Spatial Constraint Masking (BPBD Maros Historical Records & Elevation Physics):
                                 centroid_y = p_smooth.centroid.y
                                 centroid_x = p_smooth.centroid.x
                                 
-                                # Filter historis BPBD Maros:
-                                # 1. Tanralili bagian timur (X > 119.65 deg) adalah daratan tinggi/perbukitan yang tidak pernah terkena banjir luapan menetap
-                                if kec_name.lower() == "tanralili" and centroid_x > 119.65:
-                                    poly_risk = "Rendah" if area_ha > 100 else "Sangat Rendah"
-                                # 2. Mandai bagian selatan (Y < -5.08 deg): area tinggi dekat batas kota Makassar
-                                elif kec_name.lower() == "mandai" and centroid_y < -5.08:
-                                    poly_risk = "Rendah" if area_ha > 100 else "Sangat Rendah"
-                                # 3. Pegunungan Karst Timur (Camba, Cenrana, Mallawa): bebas dari banjir luapan
-                                elif kec_name.lower() in ["camba", "cenrana", "mallawa"]:
+                                # 1. Moncongloe & Mandai Selatan (dekat batas Makassar/Gowa): Wilayah perbukitan/daratan sedang-tinggi.
+                                #    Secara historis & fisika topografi bebas banjir luapan masif. Jika Moncongloe banjir 2000+ Ha, Maros Baru pasti sudah tenggelam.
+                                if kec_name.lower() == "moncongloe":
+                                    poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
+                                elif kec_name.lower() == "mandai" and centroid_y < -5.06:
+                                    poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
+                                # 2. Tanralili bagian timur (X > 119.62 deg): daratan tinggi/perbukitan
+                                elif kec_name.lower() == "tanralili" and centroid_x > 119.62:
+                                    poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
+                                # 3. Pegunungan Karst & Dataran Tinggi Timur (Camba, Cenrana, Mallawa, Tompobulu): bebas dari banjir luapan
+                                elif kec_name.lower() in ["camba", "cenrana", "mallawa", "tompobulu"]:
                                     poly_risk = "Sangat Rendah"
                                         
                                 feature = {

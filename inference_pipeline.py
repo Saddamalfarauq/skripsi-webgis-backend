@@ -229,7 +229,12 @@ class FloodInferencePipeline:
         geojson_path = os.path.join(output_dir, f"flood-risk-latest.geojson")
         if HAS_GEO:
             if len(final_masks) > 0:
-                self._export_geojson(final_masks, transform, crs, risk_label, risk_confidence, geojson_path)
+                # Buat water_spectral_mask dari NDWI (ch 5) dan VV (ch 6) untuk memastikan hanya piksel air riil yang diambil
+                ndwi_data = cnn_input[5]
+                vv_data = cnn_input[6]
+                water_spectral_mask = (ndwi_data > -0.05) | (vv_data < -12.0)
+                
+                self._export_geojson(final_masks, transform, crs, risk_label, risk_confidence, geojson_path, water_mask=water_spectral_mask)
             else:
                 # Generate empty GeoJSON to indicate no floods found
                 geojson = {
@@ -247,7 +252,7 @@ class FloodInferencePipeline:
         
         return risk_label, float(risk_confidence), int(len(boxes)), geojson_path
         
-    def _export_geojson(self, masks, transform, crs, risk_label, risk_confidence, output_path):
+    def _export_geojson(self, masks, transform, crs, risk_label, risk_confidence, output_path, water_mask=None):
         print(f"[EXPORT] Generating GeoJSON...")
         
         # Gabungkan semua mask menjadi satu master mask
@@ -255,9 +260,13 @@ class FloodInferencePipeline:
         for m in masks:
             master_mask |= m.astype(np.uint8)
             
-        # Rapikan mask dengan morfologi (menghaluskan tepi dan menutup lubang)
+        # Terapkan water_spectral_mask agar memangkas piksel daratan non-air
+        if water_mask is not None:
+            master_mask = master_mask & water_mask.astype(np.uint8)
+            
+        # Rapikan mask dengan morfologi
         import cv2
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         master_mask = cv2.morphologyEx(master_mask, cv2.MORPH_CLOSE, kernel)
         master_mask = cv2.morphologyEx(master_mask, cv2.MORPH_OPEN, kernel)
         
@@ -298,15 +307,7 @@ class FloodInferencePipeline:
                             if intersection.is_empty:
                                 continue
                                 
-                            # Cek apakah intersection merupakan pembengkakan poligon batas kecamatan (>15% luas kecamatan)
-                            # Jika ya, potong secara presisi ke koridor sungai & cekungan air riil agar tidak memblokir seluruh kecamatan
-                            kec_total_area = kec_geom.area
-                            if intersection.area >= 0.15 * kec_total_area:
-                                intersection = intersection.buffer(-0.004).simplify(0.0005, preserve_topology=True)
-                                if intersection.is_empty:
-                                    continue
-                                
-                            # Handle hasil intersection
+                            # Handle hasil intersection TANPA NEGATIVE BUFFER AGAR TIDAK ADA PADDING/MARGIN BUATAN
                             if intersection.geom_type == 'MultiPolygon':
                                 polys_to_add = list(intersection.geoms)
                             elif intersection.geom_type == 'GeometryCollection':
@@ -315,7 +316,7 @@ class FloodInferencePipeline:
                                 polys_to_add = [intersection]
                                 
                             for p in polys_to_add:
-                                p_smooth = p.simplify(0.0005, preserve_topology=True)
+                                p_smooth = p.simplify(0.0003, preserve_topology=True)
                                 if p_smooth.is_empty:
                                     continue
                                 
@@ -347,7 +348,7 @@ class FloodInferencePipeline:
                                 centroid_x = p_smooth.centroid.x
                                 
                                 # 1. Moncongloe & Mandai Selatan (dekat batas Makassar/Gowa): Wilayah perbukitan/daratan sedang-tinggi.
-                                #    Secara historis & fisika topografi bebas banjir luapan masif. Jika Moncongloe banjir 2000+ Ha, Maros Baru pasti sudah tenggelam.
+                                #    Secara historis & fisika topografi bebas banjir luapan masif.
                                 if kec_name.lower() == "moncongloe":
                                     poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
                                 elif kec_name.lower() == "mandai" and centroid_y < -5.06:

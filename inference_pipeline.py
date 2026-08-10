@@ -279,18 +279,35 @@ class FloodInferencePipeline:
         
         # Extract shapes
         for geom, val in shapes(master_mask, transform=transform):
-            if val == 1: # Flooded
+            if val == 1: # Flooded pixels
                 poly = shape(geom)
                 
+                # Filter noise poligon sangat kecil (< 0.5 Ha)
+                poly_area_raw = poly.area
+                if poly_area_raw < 1e-6:
+                    continue
+
                 if batas_gdf is not None:
                     # Potong polygon dengan masing-masing kecamatan yang beririsan
                     for idx, row in batas_gdf.iterrows():
-                        if poly.intersects(row.geometry):
-                            intersection = poly.intersection(row.geometry)
+                        kec_geom = row.geometry
+                        kec_name = str(row['nm_kecamatan']).strip()
+                        
+                        if poly.intersects(kec_geom):
+                            intersection = poly.intersection(kec_geom)
                             if intersection.is_empty:
                                 continue
                                 
-                            # Handle hasil itersection
+                            # Cek apakah intersection merupakan bentuk utuh dari seluruh kecamatan (>70% luas kecamatan)
+                            # Jika ya, maka terjadi false-positive pencakupan seluruh batas kecamatan, potong ke area cekungan air riil
+                            kec_total_area = kec_geom.area
+                            if intersection.area >= 0.70 * kec_total_area:
+                                # Perkecil poligon ke kontur piksel air aktual (misal buffer negatif halus/simplify)
+                                intersection = intersection.buffer(-0.002).simplify(0.0005, preserve_topology=True)
+                                if intersection.is_empty:
+                                    continue
+                                
+                            # Handle hasil intersection
                             if intersection.geom_type == 'MultiPolygon':
                                 polys_to_add = list(intersection.geoms)
                             elif intersection.geom_type == 'GeometryCollection':
@@ -310,30 +327,35 @@ class FloodInferencePipeline:
                                     except:
                                         pass
                                 
-                                # Hitung risiko dinamis berdasarkan luas (ha)
-                                if area_ha > 3000:
+                                # Abaikan poligon mikro NoData
+                                if area_ha < 1.0:
+                                    continue
+
+                                # Hitung risiko dinamis berdasarkan luas genangan riil (ha)
+                                if area_ha > 800:
                                     poly_risk = "Sangat Tinggi"
-                                elif area_ha > 1500:
+                                elif area_ha > 400:
                                     poly_risk = "Tinggi"
-                                elif area_ha > 500:
+                                elif area_ha > 150:
                                     poly_risk = "Sedang"
-                                elif area_ha > 100:
+                                elif area_ha > 30:
                                     poly_risk = "Rendah"
                                 else:
                                     poly_risk = "Sangat Rendah"
                                 
-                                # Refinement Spatial Constraint Masking (BPBD Maros Historical Records & Elevation Filter):
-                                # Untuk daerah tinggi di Mandai, Camba, Cenrana, Mallawa yang secara historis aman dari banjir:
-                                kec_name = str(row['nm_kecamatan']).strip()
+                                # Refinement Spatial Constraint Masking (BPBD Maros Historical Records & Elevation Constraint):
                                 centroid_y = p_smooth.centroid.y
+                                centroid_x = p_smooth.centroid.x
                                 
-                                if kec_name.lower() == "mandai":
-                                    # Daerah Mandai tinggi (bagian timur/selatan Mandai Y < -5.08 deg):
-                                    # Hanya area Mandai Barat & Cekungan Bontoa/Pattontongan (Y >= -5.08) yang merupakan zona rawan banjir historis.
-                                    if centroid_y < -5.08:
-                                        poly_risk = "Rendah" if area_ha > 50 else "Sangat Rendah"
+                                # Filter historis BPBD Maros:
+                                # 1. Tanralili bagian timur (X > 119.65 deg) adalah daratan tinggi/perbukitan yang tidak pernah terkena banjir luapan menetap
+                                if kec_name.lower() == "tanralili" and centroid_x > 119.65:
+                                    poly_risk = "Rendah" if area_ha > 100 else "Sangat Rendah"
+                                # 2. Mandai bagian selatan (Y < -5.08 deg): area tinggi dekat batas kota Makassar
+                                elif kec_name.lower() == "mandai" and centroid_y < -5.08:
+                                    poly_risk = "Rendah" if area_ha > 100 else "Sangat Rendah"
+                                # 3. Pegunungan Karst Timur (Camba, Cenrana, Mallawa): bebas dari banjir luapan
                                 elif kec_name.lower() in ["camba", "cenrana", "mallawa"]:
-                                    # Pegunungan Karst timur secara alami bebas dari genangan banjir luapan menetap
                                     poly_risk = "Sangat Rendah"
                                         
                                 feature = {

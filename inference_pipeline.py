@@ -423,8 +423,14 @@ class FloodInferencePipeline:
                                     poly_risk = "Sangat Rendah"
                                 # 4. Pesisir Barat (Bontoa, Lau, Maros Baru, Marusu):
                                 #    Air permanen tambak ikan/udang sepanjang tahun.
-                                #    Cap maksimal 'Rendah' (normal) JIKA CNN yakin kemarau ATAU luasan tambak < 2000 Ha.
-                                elif (centroid_x < 119.52) and (kec_name.lower() in ["bontoa", "lau", "maros baru", "marusu"]):
+                                #    Gunakan batas normal luas tambak per kecamatan karena CNN sering salah prediksi (false positive) di area ini saat kemarau.
+                                elif kec_name.lower() == "bontoa":
+                                    if area_ha < 4000 or risk_label in ["Sangat Rendah", "Rendah"]:
+                                        poly_risk = "Rendah" if area_ha > 150 else "Sangat Rendah"
+                                elif kec_name.lower() in ["marusu", "maros baru"]:
+                                    if area_ha < 2500 or risk_label in ["Sangat Rendah", "Rendah"]:
+                                        poly_risk = "Rendah" if area_ha > 150 else "Sangat Rendah"
+                                elif kec_name.lower() == "lau":
                                     if area_ha < 2000 or risk_label in ["Sangat Rendah", "Rendah"]:
                                         poly_risk = "Rendah" if area_ha > 150 else "Sangat Rendah"
                                 # Hapus poligon Sangat Rendah agar peta bersih dari noise

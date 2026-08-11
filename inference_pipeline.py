@@ -265,11 +265,11 @@ class FloodInferencePipeline:
                 # Otsu Thresholding: cari batas optimal antara distribusi air & non-air
                 from skimage.filters import threshold_otsu
                 ndwi_otsu  = float(threshold_otsu(valid_ndwi))
-                ndwi_thresh = float(np.clip(ndwi_otsu, 0.02, 0.30))
+                ndwi_thresh = float(np.clip(ndwi_otsu, 0.08, 0.30))
                 method = "Otsu"
             except Exception:
                 # Fallback: gunakan persentil ke-80 (top 20% paling basah = air)
-                ndwi_thresh = float(np.clip(np.percentile(valid_ndwi, 80), 0.02, 0.30))
+                ndwi_thresh = float(np.clip(np.percentile(valid_ndwi, 80), 0.08, 0.30))
                 method = "p80-fallback"
             ndwi_water = ndwi_data > ndwi_thresh
             print(f"  -> Adaptive NDWI threshold ({method}): {ndwi_thresh:.4f}")
@@ -403,23 +403,26 @@ class FloodInferencePipeline:
                                 centroid_y = p_smooth.centroid.y
                                 centroid_x = p_smooth.centroid.x
                                 
-                                # 1. Moncongloe & Mandai Selatan (dekat batas Makassar/Gowa): Wilayah perbukitan/daratan sedang-tinggi.
-                                #    Secara historis & fisika topografi bebas banjir luapan masif.
-                                if kec_name.lower() == "moncongloe":
+                                # 1. Moncongloe & Mandai Selatan: perbukitan, bebas banjir masif
+                                #    Nama GeoJSON: 'Moncong Loe' (dengan spasi)
+                                if kec_name.lower() in ["moncongloe", "moncong loe"]:
                                     poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
                                 elif kec_name.lower() == "mandai" and centroid_y < -5.06:
                                     poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
-                                # 2. Tanralili bagian timur (X > 119.62 deg): daratan tinggi/perbukitan
+                                # 2. Tanralili timur: daratan tinggi
                                 elif kec_name.lower() == "tanralili" and centroid_x > 119.62:
                                     poly_risk = "Sangat Rendah" if area_ha < 400 else "Rendah"
-                                # 3. Pegunungan Karst & Dataran Tinggi Timur (Camba, Cenrana, Mallawa, Tompobulu): bebas dari banjir luapan
-                                elif kec_name.lower() in ["camba", "cenrana", "mallawa", "tompobulu"]:
+                                # 3. Pegunungan Karst Timur: selalu Sangat Rendah
+                                #    PERHATIAN: nama GeoJSON 'Malllawa' (3 huruf l), bukan 'Mallawa'
+                                elif kec_name.lower() in ["camba", "cenrana", "malllawa", "mallawa", "tompobulu"]:
                                     poly_risk = "Sangat Rendah"
-                                # 4. Filter Tambak & Air Permanen Pesisir Barat (Bontoa, Lau, Maros Baru, Marusu X < 119.52 deg):
-                                #    Pada musim kemarau (seperti Agustus), air di pesisir adalah genangan tambak ikan/udang permanen sepanjang tahun.
-                                #    Jika indikator risiko makro CNN rendah, air tambak dikategorikan sebagai "Rendah" / "Sangat Rendah".
+                                # 4. Pesisir Barat (Bontoa, Lau, Maros Baru, Marusu):
+                                #    Air permanen tambak ikan/udang sepanjang tahun.
+                                #    Cap berdasarkan LUAS (bukan CNN risk_label) agar aktif di kemarau:
+                                #    < 2000 Ha = tambak normal → Rendah/Sangat Rendah
+                                #    > 2000 Ha = banjir masif  → biarkan nilai area-based risk
                                 elif (centroid_x < 119.52) and (kec_name.lower() in ["bontoa", "lau", "maros baru", "marusu"]):
-                                    if risk_label in ["Sangat Rendah", "Rendah", "Sedang"]:
+                                    if area_ha < 2000:
                                         poly_risk = "Rendah" if area_ha > 150 else "Sangat Rendah"
                                         
                                 feature = {

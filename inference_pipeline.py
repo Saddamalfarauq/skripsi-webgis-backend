@@ -203,49 +203,87 @@ class FloodInferencePipeline:
         with torch.no_grad():
             predictions = self.maskrcnn(mask_tensor)[0]
             
-        # Filter predictions by score > 0.45 untuk menangkap segmen banjir berawan
+        # === CASCADING MASK R-CNN SCORE THRESHOLD ===
+        # Mulai dari 0.50, turun bertahap ke 0.35 dan 0.20 jika tidak ada deteksi
         scores = predictions['scores'].cpu().numpy()
-        high_conf_idx = np.where(scores > 0.45)[0]
+        masks_raw = np.array([])
+        used_score_thresh = 0.50
+        for score_thresh in [0.50, 0.35, 0.20]:
+            idx = np.where(scores > score_thresh)[0]
+            if len(idx) > 0:
+                masks_raw = predictions['masks'].cpu().numpy()[idx, 0]
+                boxes = predictions['boxes'].cpu().numpy()[idx]
+                used_score_thresh = score_thresh
+                break
+            boxes = predictions['boxes'].cpu().numpy()[np.array([], dtype=int)]
         
-        boxes = predictions['boxes'].cpu().numpy()[high_conf_idx]
-        masks = predictions['masks'].cpu().numpy()[high_conf_idx, 0] # (N, H, W)
+        print(f"  -> Mask R-CNN: {len(masks_raw)} region ditemukan (score > {used_score_thresh:.2f})")
         
-        print(f"  -> Mask R-CNN found {len(boxes)} flooded regions.")
+        # Buat valid_mask dari piksel non-zero aktual (cek B04 optis ATAU VV radar)
+        raw_b4 = cnn_input[0]   # Band B04 (Red reflectance)
+        raw_vv = cnn_input[6]   # Band VV SAR backscatter
+        # Piksel valid jika ada refleksitansi optis nyata ATAU ada sinyal radar nyata
+        valid_mask = ((raw_b4 > 10) | (raw_vv < -2.0) | ((raw_vv > 0.001) & (raw_vv < 1.0))) & \
+                     np.isfinite(raw_vv) & np.isfinite(raw_b4)
         
-        # Buat mask NoData: pastikan ada nilai refleksitansi / radar non-zero aktual
-        raw_b4 = cnn_input[0]
-        raw_vv = cnn_input[6]
-        valid_mask = ((raw_b4 > 10) | (raw_vv < -2.0)) & (raw_vv != 0)
-        
-        # Resize masks back to original resolution for GeoJSON
+        # Resize mask Mask R-CNN kembali ke resolusi asli
         original_h, original_w = cnn_input.shape[1], cnn_input.shape[2]
         final_masks = []
         import cv2
-        for m in masks:
+        for m in masks_raw:
             m_resized = cv2.resize(m, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
             m_binary = (m_resized > 0.40) & valid_mask
             if np.any(m_binary):
                 final_masks.append(m_binary)
-            
-        # Hybrid All-Weather Fallback: Radar SAR Sentinel-1 menembus awan tebal banjir (VV < -12.5 dB) OR NDWI (> 0.10)
+
+        # === ADAPTIVE SPECTRAL THRESHOLDING (All-Weather, Auto-Calibrating) ===
         ndwi_data = cnn_input[5]
-        vv_data = cnn_input[6]
+        vv_data   = cnn_input[6]
         
-        valid_pixels = vv_data[valid_mask]
-        if len(valid_pixels) > 0:
-            vv_min = np.min(valid_pixels)
-            if vv_min < -5.0: # Skala dB (logaritmik)
-                sar_water = (vv_data < -12.5) & (vv_data > -38.0)
-            else: # Skala Linier
-                sar_water = (vv_data < 0.05) & (vv_data > 0.0001)
+        valid_vv   = vv_data[valid_mask]
+        valid_ndwi = ndwi_data[valid_mask]
+        
+        # ── 1. Adaptive SAR VV Threshold (Percentile ke-20 piksel valid) ──────────
+        if len(valid_vv) > 200:
+            vv_p5  = float(np.percentile(valid_vv, 5))
+            vv_p20 = float(np.percentile(valid_vv, 20))
+            if vv_p5 < -5.0:  # Skala dB (logaritmik, misal -25 s/d -3 dB)
+                sar_thresh = float(np.clip(vv_p20, -20.0, -9.0))
+                sar_water  = (vv_data < sar_thresh) & (vv_data > -40.0)
+            else:              # Skala Linier (0.001 s/d 0.5)
+                sar_thresh = float(np.clip(vv_p20, 0.001, 0.12))
+                sar_water  = (vv_data < sar_thresh) & (vv_data > 0.0001)
+            print(f"  -> Adaptive SAR threshold: {sar_thresh:.4f} "
+                  f"({'dB' if vv_p5 < -5.0 else 'linear'} | p20 = {vv_p20:.4f})")
         else:
             sar_water = np.zeros_like(vv_data, dtype=bool)
+            print("  -> SAR: tidak cukup piksel valid untuk adaptive threshold")
 
-        ndwi_water = (ndwi_data > 0.10)
+        # ── 2. Adaptive NDWI Threshold (Otsu Bimodal, bounded 0.02–0.30) ─────────
+        if len(valid_ndwi) > 200:
+            try:
+                # Otsu Thresholding: cari batas optimal antara distribusi air & non-air
+                from skimage.filters import threshold_otsu
+                ndwi_otsu  = float(threshold_otsu(valid_ndwi))
+                ndwi_thresh = float(np.clip(ndwi_otsu, 0.02, 0.30))
+                method = "Otsu"
+            except Exception:
+                # Fallback: gunakan persentil ke-80 (top 20% paling basah = air)
+                ndwi_thresh = float(np.clip(np.percentile(valid_ndwi, 80), 0.02, 0.30))
+                method = "p80-fallback"
+            ndwi_water = ndwi_data > ndwi_thresh
+            print(f"  -> Adaptive NDWI threshold ({method}): {ndwi_thresh:.4f}")
+        else:
+            ndwi_water  = np.zeros_like(ndwi_data, dtype=bool)
+            ndwi_thresh = 0.10
+            print("  -> NDWI: tidak cukup piksel valid untuk adaptive threshold")
+
+        # Kombinasi OR: SAR menembus awan, NDWI konfirmasi optis
         water_spectral_mask = (sar_water | ndwi_water) & valid_mask
 
+        # Hybrid Fallback: aktif jika Mask R-CNN tidak menghasilkan polygon
         if len(final_masks) == 0 and np.any(water_spectral_mask):
-            print(f"  -> Hybrid Fallback: Menggunakan ekstraksi spektral penembus awan SAR + NDWI...")
+            print("  -> Hybrid Fallback: menggunakan ekstraksi spektral adaptif SAR + NDWI...")
             final_masks.append(water_spectral_mask)
 
         # 3. Export to GeoJSON

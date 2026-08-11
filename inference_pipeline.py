@@ -304,7 +304,7 @@ class FloodInferencePipeline:
             
         # 4. Visualize
         vis_path = os.path.join(output_dir, "prediction_vis.png")
-        self._visualize(rgb, boxes, masks, risk_label, vis_path)
+        self._visualize(rgb, boxes, masks_raw, risk_label, vis_path)
         
         return risk_label, float(risk_confidence), int(len(boxes)), geojson_path
         

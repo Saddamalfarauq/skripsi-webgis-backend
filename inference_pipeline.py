@@ -322,7 +322,10 @@ class FloodInferencePipeline:
             master_mask |= m.astype(np.uint8)
             
         # Terapkan water_spectral_mask agar memangkas piksel daratan non-air
-        if water_mask is not None:
+        # HANYA JIKA risiko CNN adalah Rendah/Sangat Rendah (untuk membersihkan false positive).
+        # Jika risiko Sedang/Tinggi/Sangat Tinggi, kita percaya penuh pada AI Mask R-CNN 
+        # (agar banjir tidak terhapus saat filter spektral buta karena awan/angin).
+        if water_mask is not None and risk_label in ["Sangat Rendah", "Rendah"]:
             master_mask = master_mask & water_mask.astype(np.uint8)
             
         # Rapikan mask dengan morfologi

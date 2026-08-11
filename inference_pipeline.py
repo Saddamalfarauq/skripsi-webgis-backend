@@ -278,8 +278,13 @@ class FloodInferencePipeline:
             ndwi_thresh = 0.10
             print("  -> NDWI: tidak cukup piksel valid untuk adaptive threshold")
 
-        # Kombinasi OR: SAR menembus awan, NDWI konfirmasi optis
-        water_spectral_mask = (sar_water | ndwi_water) & valid_mask
+        # Kombinasi Spektral Adaptif Berbasis CNN Risk
+        # Jika CNN yakin ini kemarau (Sangat Rendah / Rendah), gunakan AND (Sangat Ketat) untuk hilangkan noise pegunungan
+        # Jika CNN yakin ini banjir (Sedang / Tinggi / Sangat Tinggi), gunakan OR untuk menembus awan tebal
+        if risk_label in ["Sangat Rendah", "Rendah"]:
+            water_spectral_mask = (sar_water & ndwi_water) & valid_mask
+        else:
+            water_spectral_mask = (sar_water | ndwi_water) & valid_mask
 
         # Hybrid Fallback: aktif jika Mask R-CNN tidak menghasilkan polygon
         if len(final_masks) == 0 and np.any(water_spectral_mask):
@@ -418,12 +423,13 @@ class FloodInferencePipeline:
                                     poly_risk = "Sangat Rendah"
                                 # 4. Pesisir Barat (Bontoa, Lau, Maros Baru, Marusu):
                                 #    Air permanen tambak ikan/udang sepanjang tahun.
-                                #    Cap berdasarkan LUAS (bukan CNN risk_label) agar aktif di kemarau:
-                                #    < 2000 Ha = tambak normal → Rendah/Sangat Rendah
-                                #    > 2000 Ha = banjir masif  → biarkan nilai area-based risk
+                                #    Cap maksimal 'Rendah' (normal) JIKA CNN yakin kemarau ATAU luasan tambak < 2000 Ha.
                                 elif (centroid_x < 119.52) and (kec_name.lower() in ["bontoa", "lau", "maros baru", "marusu"]):
-                                    if area_ha < 2000:
+                                    if area_ha < 2000 or risk_label in ["Sangat Rendah", "Rendah"]:
                                         poly_risk = "Rendah" if area_ha > 150 else "Sangat Rendah"
+                                # Hapus poligon Sangat Rendah agar peta bersih dari noise
+                                if poly_risk == "Sangat Rendah":
+                                    continue
                                         
                                 feature = {
                                     "type": "Feature",

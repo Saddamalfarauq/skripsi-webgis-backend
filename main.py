@@ -12,11 +12,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Konfigurasi CORS agar bisa diakses oleh Frontend (React)
+# Konfigurasi CORS agar bisa diakses oleh Frontend (React Vite)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Ganti dengan domain React di production
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

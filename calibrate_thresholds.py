@@ -1,11 +1,11 @@
-﻿"""
+"""
 calibrate_thresholds.py  –  Versi 68 Tanggal (Januari 2021 - Agustus 2026)
 Setiap tanggal ke-1 pada setiap bulan selama 5 tahun 8 bulan.
 Label musim otomatis: FLOOD (Nov-Mar), DRY (Apr-Oct) berdasarkan pola hujan Sul-Sel.
 
 Jalankan:
-    cd d:\HASIL\webgis\backend
-    python calibrate_thresholds.py
+    cd d:/HASIL/webgis/backend
+    python -u calibrate_thresholds.py
 """
 
 import os, sys, json, io, zipfile, csv, time, requests, numpy as np
@@ -97,9 +97,10 @@ def analyze_date(date_str, roi, temp_dir):
         open(cp,"wb").write(r.content)
 
     with rasterio.open(cp) as src:
-        vv = src.read(1).astype(float)
-        g  = src.read(3).astype(float)
-        nir= src.read(4).astype(float)
+        # Urutan band dalam composite GeoTIFF: VV(1), VH(2), B02(3), B03(4), B04(5), B08(6)
+        vv  = src.read(1).astype(float)  # Band 1 = VV SAR
+        g   = src.read(4).astype(float)  # Band 4 = B03 (Green) untuk NDWI
+        nir = src.read(6).astype(float)  # Band 6 = B08 (NIR)   untuk NDWI
 
     with np.errstate(divide="ignore", invalid="ignore"):
         ndwi = np.where((g+nir)>0, (g-nir)/(g+nir), 0.0)
@@ -145,15 +146,16 @@ def analyze_date(date_str, roi, temp_dir):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    print("="*72)
-    print(f"  KALIBRASI THRESHOLD ADAPTIF – {len(TEST_DATES)} Tanggal (2021-01 s/d 2026-08)")
-    print("="*72)
+    print("="*72, flush=True)
+    print(f"  KALIBRASI THRESHOLD ADAPTIF – {len(TEST_DATES)} Tanggal (2021-01 s/d 2026-08)", flush=True)
+    print("="*72, flush=True)
     init_gee()
     roi = ee.Geometry.Rectangle(get_bbox())
+    print(f"  ROI bbox: {get_bbox()}", flush=True)
 
     rows, failed = [], []
     for i,(ds,lbl,desc) in enumerate(TEST_DATES,1):
-        print(f"\n[{i:02d}/{len(TEST_DATES)}] {ds} | {lbl}")
+        print(f"\n[{i:02d}/{len(TEST_DATES)}] {ds} | {lbl}", flush=True)
         tmp = os.path.join(backend_path,"dataset","staging","calib_temp",ds)
         t0  = time.time()
         try:
@@ -163,14 +165,21 @@ def main():
             if st.get("status")=="ok":
                 print(f"  scale={st['scale']} VV_p20={st['vv_p20']} SAR_t={st['sar_thresh']} "
                       f"SAR_water={st['sar_water_pct']}% NDWI_Otsu={st['ndwi_otsu']} "
-                      f"NDWI_water={st['ndwi_water_pct']}% [{elapsed}s]")
+                      f"NDWI_water={st['ndwi_water_pct']}% [{elapsed}s]", flush=True)
             else:
-                print(f"  [SKIP] {st.get('status')} | n_valid={st.get('n_valid')}")
+                print(f"  [SKIP] {st.get('status')} | n_valid={st.get('n_valid')}", flush=True)
         except Exception as e:
             elapsed = round(time.time()-t0,1)
-            print(f"  [ERROR] {e}")
+            print(f"  [ERROR] {e}", flush=True)
             rows.append({"date":ds,"season":lbl,"desc":desc,"elapsed_s":elapsed,"status":"error","error":str(e)})
             failed.append(ds)
+        # Tulis CSV setiap 5 tanggal (incremental) agar data tidak hilang jika interrupt
+        if i % 5 == 0 or i == len(TEST_DATES):
+            all_keys = list(dict.fromkeys(k for r in rows for k in r.keys()))
+            with open(OUTPUT_CSV,"w",newline="",encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
+                w.writeheader(); w.writerows(rows)
+            print(f"  [CSV] Progress disimpan: {i} tanggal selesai.", flush=True)
         time.sleep(2)
 
     # Tulis CSV
